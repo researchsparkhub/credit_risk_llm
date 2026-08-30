@@ -250,8 +250,88 @@ The authors thank Research Spark Hub Inc.\ for support in the preparation of thi
 \bibliography{references}
 
 \appendices
-\section{Prompt and Reproducibility Details}
-All clients were serialized as comma-separated \texttt{name=value} fields. The base prompt states the task, briefly defines the feature groups (\texttt{PAY\_*} repayment codes, \texttt{BILL\_AMT}, \texttt{PAY\_AMT}, \texttt{LIMIT\_BAL}), lists $k{=}12$ balanced labeled examples, gives the condition-specific instruction, lists the clients, and requires a JSON array of \texttt{\{id,label,confidence\}} with no prose. In E1/E3/E5 the serialization is restricted to the RF's top-8 features (\texttt{PAY\_0, PAY\_2, BILL\_AMT1, PAY\_4, PAY\_3, LIMIT\_BAL, PAY\_AMT1, BILL\_AMT2}); in E6/E7 each row additionally carries classifier probabilities and 0/1 decisions (out-of-bag/cross-validated for few-shot examples, fitted-model outputs for test clients). Data split: stratified 80/20, seed 42; LLM evaluation on a stratified 2{,}000-client subset of the test set. Fitted models: RF (100 trees, depth 12), logistic regression (standardized), AdaBoost (200 estimators). LLM: \texttt{claude-sonnet-5}, extended thinking disabled, batched at 20 clients per request with response caching. Uncertainty: 1{,}000 bootstrap resamples (paired for between-condition comparisons); diffusion study over 5 seeds. Diffusion generator: Gaussian DDPM (cosine schedule) on quantile-normal-transformed defaulter rows.
+\section{Prompts, Model Details, and Reproducibility}
+
+\textbf{Model and inference.} All LLM conditions use \texttt{claude-sonnet-5} (Anthropic) with \emph{extended thinking disabled} for near-determinism. Requests set \texttt{max\_tokens} to 2000--3000; no temperature parameter is passed (SDK default). Clients are sent in batches of 20 per request, and every raw response is cached to disk so re-runs reproduce the exact numbers without new API calls. Each response is required to be a strict JSON array and is parsed directly.
+
+\textbf{Few-shot examples.} Every prompt includes $k{=}12$ balanced labeled examples (6 default, 6 non-default) drawn from the training split with seed 42. The same random set is used for all conditions except the exemplar-selection conditions (E2/E4), which instead select 12 examples by out-of-bag RF probability (nearest 0.5 for boundary; nearest 0/1 for representative).
+
+\textbf{Serialization.} Each client is rendered as comma-separated \texttt{name=value} fields. A few-shot line is \texttt{- <fields> -> <label>}; a query line is \texttt{id <k>: <fields>}. Conditions E1/E3/E5 restrict \texttt{<fields>} to the RF's top-8 features (\texttt{PAY\_0, PAY\_2, BILL\_AMT1, PAY\_4, PAY\_3, LIMIT\_BAL, PAY\_AMT1, BILL\_AMT2}). Hybrid conditions append classifier outputs to each line (see Fig.~\ref{fig:instr}).
+
+\textbf{Fitted models and evaluation.} Random Forest (100 trees, depth 12), logistic regression (standardized), AdaBoost (200 estimators); stratified 80/20 split, seed 42; LLM evaluation on a stratified 2{,}000-client subset of the test set. Uncertainty: 1{,}000 bootstrap resamples, paired for between-condition comparisons; the diffusion study reports mean $\pm$ 95\% CI over 5 seeds. Diffusion generator: Gaussian DDPM with a cosine schedule on quantile-normal-transformed defaulter rows.
+
+The exact base prompt template is shown in Fig.~\ref{fig:prompt}, and the exact condition-specific instructions and hybrid additions in Fig.~\ref{fig:instr}.
+
+\begin{figure}[!t]
+\footnotesize
+\begin{verbatim}
+You are predicting credit-card default (1 = will
+default next month, 0 = will not) for UCI 'Default
+of Credit Card Clients' data.
+PAY_0..PAY_6 = repayment-status codes (>=1 means
+months delayed), BILL_AMT* = bills, PAY_AMT* =
+payments, LIMIT_BAL = credit limit.
+12 labeled examples (features -> label):
+- LIMIT_BAL=50000, ..., PAY_AMT6=2000 -> 1
+  ... (11 more balanced examples) ...
+
+<CONDITION-SPECIFIC INSTRUCTION>
+
+Clients:
+id 0: LIMIT_BAL=20000, ..., PAY_AMT6=0
+  ... (up to 20 clients per request) ...
+
+Return ONLY a JSON array, one object per client
+in order:
+[{"id":0,"label":0,"confidence":0.0}, ...]
+confidence = probability that label=1 (default),
+0..1. No prose.
+\end{verbatim}
+\caption{Exact base prompt template (verbatim). Few-shot rows and client rows are abbreviated with ``...''; all other text is sent as shown.}
+\label{fig:prompt}
+\end{figure}
+
+\begin{figure}[!t]
+\scriptsize
+\begin{verbatim}
+L1 (direct):
+  Predict each client's label using general
+  repayment-behavior patterns.
+
+L2 (role + features):
+  Act as a trained Random Forest classifier. A
+  fitted Random Forest ranks these features most
+  important (in order): PAY_0, PAY_2, BILL_AMT1,
+  PAY_4, PAY_3, LIMIT_BAL, PAY_AMT1, BILL_AMT2.
+  Weigh repayment-status (PAY_*) most, then
+  bill/payment amounts.
+
+L2a (role only):
+  Act as a trained Random Forest classifier. Use
+  your own judgment about which features matter most.
+
+L2b (features only):
+  When deciding, weigh these features most (in
+  order): <top-8 list>. Weigh repayment-status
+  (PAY_*) most, then bill/payment amounts.
+
+E1/E3/E5 (feature pruning): same instruction as L1,
+  but each row lists ONLY the top-8 features.
+
+E6 (hybrid) preamble adds:
+  Each row also includes RF_prob (a trained Random
+  Forest's estimated probability of default) and
+  RF_pred (its 0/1 decision). Combine RF's opinion
+  with the features to decide.
+  ... and each row appends:  RF_prob=0.73, RF_pred=1
+
+E7 (ensemble hybrid) appends three classifiers:
+  RF_prob=.., RF_pred=.., LR_prob=.., LR_pred=..,
+  ADA_prob=.., ADA_pred=..
+\end{verbatim}
+\caption{Exact condition-specific instructions and hybrid row additions (verbatim). \texttt{<top-8 list>} is the ordered feature list shown in L2.}
+\label{fig:instr}
+\end{figure}
 
 \medskip
 \noindent\textbf{Reproducibility.} All code, data-preparation scripts, per-condition prompts, cached LLM outputs, result tables, and the scripts that produce every figure are available at \url{https://github.com/researchsparkhub/credit_risk_llm} (made public upon publication). Because the LLM responses are cached in the repository, every reported number can be regenerated without new API calls; the dataset is rebuilt from the public UCI source via the included conversion script. Random seeds are fixed (42; diffusion confidence intervals use seeds 0--4).
