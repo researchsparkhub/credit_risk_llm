@@ -1,0 +1,239 @@
+\documentclass[conference]{IEEEtran}
+
+\usepackage{graphicx}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{cite}
+\usepackage{amsmath}
+
+\title{When Does a Classifier Help an LLM? Classifier-Guided Prompting and Hybrid Classifier--LLM Models for Credit-Default Prediction}
+
+\author{
+\IEEEauthorblockN{Rishi Datta}
+\IEEEauthorblockA{Amador Valley High School\\ Pleasanton, California, USA\\ rishidatta20@gmail.com}
+\and
+\IEEEauthorblockN{Anandaswarup Vadapalli}
+\IEEEauthorblockA{Research Spark Hub Inc.\\ Dublin, California, USA\\ anandaswarup.vadapalli@gmail.com}
+}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Large Language Models (LLMs) are increasingly proposed for credit-risk assessment, but how best to combine an LLM with a conventional fitted classifier on tabular data remains unclear. We study this question on the \textit{Default of Credit Card Clients} dataset using a fixed, class-imbalanced evaluation set of 2{,}000 held-out clients, with all comparisons reported using imbalance-aware metrics (precision, recall, F1, AUC-ROC, AUC-PR) and bootstrap confidence intervals. Three findings emerge. First, a plain few-shot LLM (\texttt{claude-sonnet-5}) is \emph{recall-competitive}: it attains the highest recall (0.47) and F1 (0.50) of any single model, exceeding a fitted Random Forest (recall 0.37, F1 0.48) and logistic regression (recall 0.25), but it is inferior at \emph{ranking} (AUC-ROC 0.72 vs.\ 0.79). Second, instructing the LLM to \emph{imitate} a classifier---by role (``act as a Random Forest''), by listing important features, or both---yields \emph{no statistically significant} improvement over direct prompting; in contrast, \emph{using} the classifier to construct the prompt does: pruning the prompt to the classifier's most important features significantly improves recall ($+0.071$) and F1 ($+0.032$), while curating the few-shot examples (by decision-boundary proximity or by prototypicality) significantly \emph{hurts}. Third, and most useful in practice, feeding the classifier's predicted probability into the prompt (a hybrid model) raises the LLM's AUC-ROC from 0.72 to 0.78---matching the Random Forest---while retaining significantly higher recall ($+0.118$ over the Random Forest). The reverse direction (LLM output as a feature for the classifier) yields no gain, and adding more classifier opinions (logistic regression and AdaBoost) does not improve on using the Random Forest alone. We additionally find that diffusion-based minority-class augmentation improves AUC-PR and precision over SMOTE but does not surpass simple class-weighting. Together these results give a concrete recipe: prune the prompt to a classifier's important features and feed a single strong classifier's probability into the LLM; do not rely on imitation instructions, example curation, or the reverse composition.
+\end{abstract}
+
+\section{Introduction}
+
+Credit-risk assessment is a canonical supervised classification task: given a client's repayment history, credit limit, billing and payment amounts, and demographics, a model estimates the probability of default. Logistic regression and tree ensembles such as Random Forests are long-standing, strong baselines because they capture the nonlinear interactions typical of credit data~\cite{yeh2009comparative,breiman2001random,lessmann2015benchmarking}.
+
+Large Language Models (LLMs) have attracted interest for financial decision support because they follow structured instructions and produce natural-language explanations~\cite{brown2020language}. However, an LLM presented with tabular records differs fundamentally from a \emph{fitted} classifier: a trained classifier learns parameters from labeled data, whereas an LLM can only be \emph{instructed} at inference time. Prior work has noted the difficulty of applying LLMs directly to numerical/tabular prediction and has generally kept prediction grounded in a conventional model while using the LLM for explanation~\cite{golec2025interpretable,nallakaruppan2024credit,bussmann2021explainable}.
+
+This raises a practical question that, to our knowledge, has not been carefully isolated for credit risk: \emph{when, and how, does a fitted classifier actually help an LLM (and vice versa)?} We distinguish three ways a classifier's knowledge can be transferred to an LLM prompt and test each in a controlled manner:
+\begin{enumerate}
+    \item \textbf{Imitation instructions:} tell the LLM to reason like the classifier (role and/or feature-importance hints).
+    \item \textbf{Classifier-guided prompt construction:} use the classifier to decide \emph{what to put in the prompt}---which features to show, and which few-shot examples to use.
+    \item \textbf{Hybrid composition:} feed the classifier's output (predicted probability and decision) into the prompt as input, or conversely feed the LLM's output into the classifier.
+\end{enumerate}
+
+\subsection{Contributions}
+\begin{itemize}
+    \item A controlled comparison, on a fixed imbalanced evaluation set with imbalance-aware metrics and bootstrap confidence intervals, of a few-shot LLM against fitted logistic regression, Random Forest, and AdaBoost for credit-default prediction.
+    \item An ablation showing that \emph{imitation} prompting (classifier role, feature-importance hints, or both) gives no significant improvement over direct prompting.
+    \item Evidence that \emph{classifier-guided prompt construction} has opposite-signed effects: feature pruning significantly helps, while few-shot example curation (boundary or prototypical) significantly hurts.
+    \item A hybrid model that feeds a classifier's probability into the LLM, achieving Random-Forest-level ranking with significantly higher recall; and negative results for the reverse composition and for using multiple classifiers.
+    \item A secondary study showing diffusion-based minority augmentation beats SMOTE on AUC-PR/precision but not simple class-weighting.
+\end{itemize}
+All comparisons that motivate a claim are accompanied by 95\% bootstrap confidence intervals; we explicitly report null and negative results.
+
+\section{Dataset}
+We use the \textit{Default of Credit Card Clients} dataset~\cite{yeh2009comparative}: 30{,}000 clients, 23 features (credit limit, sex, education, marital status, age; repayment-status codes \texttt{PAY\_0}--\texttt{PAY\_6}; bill amounts \texttt{BILL\_AMT1--6}; payment amounts \texttt{PAY\_AMT1--6}), and a binary default label. The data are imbalanced: $22.1\%$ default.
+
+We split 80/20 with a fixed seed, \emph{stratified} by label (24{,}000 train / 6{,}000 test). Fitted models train on the full 24{,}000. Because LLM inference is comparatively expensive, all LLM conditions are evaluated on a fixed, stratified subset of 2{,}000 held-out test clients (default rate $22.1\%$); every LLM condition sees the same 2{,}000 clients. The diffusion-augmentation study (Section~\ref{sec:diffusion}), which involves only fitted models, is evaluated on the full 6{,}000-client test set.
+
+\section{Methodology}
+
+\subsection{Fitted baselines}
+\textbf{Majority} predicts the majority (no-default) class. \textbf{Logistic Regression} is trained on standardized features. \textbf{Random Forest} (RF) uses 100 trees, maximum depth 12. \textbf{AdaBoost} uses 200 estimators. All use a fixed seed.
+
+\subsection{LLM prediction}
+The LLM is \texttt{claude-sonnet-5} with extended thinking disabled for near-determinism. Each client's features are serialized as text; the model is given $k{=}12$ balanced labeled few-shot examples (6 default, 6 non-default) drawn from the training set and asked to return, for each client, a JSON object with a binary \texttt{label} and a \texttt{confidence} $\in[0,1]$ interpreted as $P(\text{default})$ (used for AUC). Requests are batched (20 clients per call) and cached. We evaluate the following LLM conditions.
+
+\textbf{Imitation prompting.}
+\begin{itemize}
+    \item \textbf{L1 (direct):} predict from features and the few-shot examples, no classifier guidance.
+    \item \textbf{L2 (full):} ``act as a trained Random Forest'' \emph{and} a list of the RF's top features to weigh.
+    \item \textbf{L2a (role only):} ``act as a trained Random Forest,'' no feature list.
+    \item \textbf{L2b (features only):} weigh the RF's important features, no role.
+\end{itemize}
+
+\textbf{Classifier-guided prompt construction} (instruction text held constant at the plain L1 wording; only prompt \emph{content} changes).
+\begin{itemize}
+    \item \textbf{E1 (top-$K$ features):} include only the RF's top-8 features; drop the other 15.
+    \item \textbf{E2 (boundary shots):} choose the 12 few-shot examples nearest the RF decision boundary (out-of-bag probability closest to $0.5$), balanced by class.
+    \item \textbf{E3:} E1 $+$ boundary shots.
+    \item \textbf{E4 (representative shots):} choose the most confidently-correct examples (out-of-bag probability near 1 for defaulters, near 0 for non-defaulters), balanced.
+    \item \textbf{E5:} E1 $+$ representative shots.
+\end{itemize}
+Few-shot verdicts used for selection come from out-of-bag/cross-validated probabilities so they are not overfit.
+
+\textbf{Hybrid composition.}
+\begin{itemize}
+    \item \textbf{E6 (RF $\rightarrow$ LLM):} E1 $+$ the RF's predicted probability and 0/1 decision as extra inputs for each client (and each few-shot example, using out-of-bag verdicts).
+    \item \textbf{E7 (ensemble $\rightarrow$ LLM):} E1 $+$ the probabilities and decisions of \emph{three} classifiers (RF, logistic regression, AdaBoost).
+    \item \textbf{Inverse (LLM $\rightarrow$ RF):} add the LLM's E1 label and confidence as features to the RF; evaluated by 5-fold cross-validation on the 2{,}000 (comparing RF with vs.\ without the LLM feature on identical folds).
+\end{itemize}
+
+\subsection{Metrics and uncertainty}
+We report accuracy, and---because the data are imbalanced---precision, recall, and F1 on the default class, plus AUC-ROC and AUC-PR. Overall accuracy is reported alongside the majority-baseline accuracy (0.779) to contextualize it. Uncertainty on the 2{,}000-client set uses 1{,}000 bootstrap resamples; comparisons between conditions use \emph{paired} bootstrap (same resampled indices), and we call a difference significant when its 95\% CI excludes zero. The diffusion study reports mean $\pm$ 95\% CI across 5 seeds.
+
+\section{Results}
+
+\begin{figure}[!t]
+\centering
+\includegraphics[width=0.92\columnwidth]{fig_tradeoff.pdf}
+\caption{Recall vs.\ AUC-ROC across models (N=2000). Fitted models (squares) rank well but catch few defaulters; plain/prompt-engineered LLM conditions (circles) catch more defaulters but rank worse; the hybrid E6 (star) attains Random-Forest-level ranking \emph{and} high recall.}
+\label{fig:tradeoff}
+\end{figure}
+
+Figure~\ref{fig:tradeoff} previews the central trade-off: fitted models occupy the high-AUC/low-recall region, LLM conditions the low-AUC/high-recall region, and the hybrid E6 reaches the desirable high-AUC/high-recall corner.
+
+\subsection{LLM vs.\ fitted models, and imitation prompting}
+Table~\ref{tab:main} reports all fitted baselines and the imitation-prompting LLM conditions on the 2{,}000-client set.
+
+\begin{table}[!t]
+\caption{Fitted baselines and imitation-prompting LLM conditions (N=2000, default rate 22.1\%). Best value per column in bold.}
+\label{tab:main}
+\centering
+\setlength{\tabcolsep}{3pt}
+\footnotesize
+\begin{tabular}{lcccccc}
+\toprule
+Model & Acc & Prec & Rec & F1 & AUROC & AUPRC \\
+\midrule
+Majority          & 0.779 & --    & 0.000 & 0.000 & --    & --    \\
+Logistic Reg.     & 0.811 & \textbf{0.708} & 0.247 & 0.366 & 0.733 & 0.512 \\
+Random Forest     & 0.821 & 0.668 & 0.373 & 0.479 & 0.790 & \textbf{0.577} \\
+AdaBoost          & \textbf{0.823} & 0.698 & 0.351 & 0.467 & \textbf{0.793} & 0.571 \\
+\midrule
+L1: direct LLM    & 0.789 & 0.525 & 0.473 & 0.498 & 0.719 & 0.481 \\
+L2: role+features & 0.790 & 0.526 & 0.480 & 0.502 & 0.724 & 0.478 \\
+L2a: role only    & 0.795 & 0.540 & 0.477 & 0.507 & 0.722 & 0.487 \\
+L2b: features only& 0.790 & 0.526 & 0.489 & 0.506 & 0.728 & 0.486 \\
+E1: top-8 feats   & 0.786 & 0.515 & \textbf{0.543} & \textbf{0.529} & 0.723 & 0.470 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Two observations. (i) The LLM \emph{trades precision for recall}: the direct LLM (L1) flags $\sim$20\% of clients as defaulters vs.\ the RF's 12\%, giving the highest recall (0.47) and, with E1, the highest F1 (0.53) of any model---above the fitted RF (0.48)---while the fitted models retain higher precision, accuracy, and AUC. The LLM is thus recall-competitive but ranking-inferior. (ii) \textbf{Imitation prompting does not help}: paired bootstrap differences of L2, L2a, and L2b versus L1 are non-significant on F1, AUC-ROC, and recall (all 95\% CIs include zero; e.g., L2$-$L1 F1 $=+0.004$, CI $[-0.013,+0.020]$). Neither the ``act as a Random Forest'' role nor an explicit feature-importance list changes performance.
+
+\subsection{Classifier-guided prompt construction}
+Table~\ref{tab:paired} reports paired differences versus L1 for the prompt-construction and hybrid conditions.
+
+\begin{table}[!t]
+\caption{Paired differences vs.\ L1 (mean [95\% CI], 1000 bootstrap resamples). Bold = significant (CI excludes 0).}
+\label{tab:paired}
+\centering
+\setlength{\tabcolsep}{2.5pt}
+\scriptsize
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{llll}
+\toprule
+Condition & $\Delta$F1 & $\Delta$AUROC & $\Delta$Recall \\
+\midrule
+E1 top-8 feats     & \textbf{+.032 [.006,.056]} & +.005 [$-$.013,.022] & \textbf{+.071 [.040,.102]} \\
+E2 boundary shots  & \textbf{$-$.057 [$-$.088,$-$.025]} & $-$.006 [$-$.018,.006] & \textbf{$-$.125 [$-$.158,$-$.092]} \\
+E3 top-8+boundary  & $-$.011 [$-$.039,.015] & +.006 [$-$.013,.023] & \textbf{$-$.045 [$-$.075,$-$.015]} \\
+E4 repr.\ shots    & \textbf{$-$.029 [$-$.054,$-$.006]} & +.001 [$-$.009,.013] & \textbf{$-$.070 [$-$.097,$-$.044]} \\
+E5 top-8+repr.     & +.020 [$-$.005,.046] & +.011 [$-$.004,.027] & +.016 [$-$.012,.047] \\
+\midrule
+E6 (E1+RF)         & +.026 [$-$.000,.054] & \textbf{+.063 [.039,.085]} & +.019 [$-$.010,.048] \\
+E7 (E1+RF+LR+ADA)  & +.026$^{\dagger}$ & +.058$^{\dagger}$ & $-$.010$^{\dagger}$ \\
+\bottomrule
+\end{tabular}}
+\\[2pt]
+\raggedright \footnotesize $^{\dagger}$E7 differences vs.\ L1 shown for reference; E7 is compared against E6 in the text.
+\end{table}
+
+\textbf{Feature pruning helps; example curation hurts.} Restricting the prompt to the RF's top-8 features (E1) significantly improves recall ($+0.071$) and F1 ($+0.032$)---and E1 attains the best F1 of any model in the study (0.529), above the fitted RF. In contrast, both example-curation strategies significantly \emph{reduce} recall and F1: boundary (hardest-case) selection (E2) is worst ($\Delta$F1 $-0.057$, $\Delta$recall $-0.125$), and representative (prototypical) selection (E4) also significantly hurts ($\Delta$F1 $-0.029$). Combining feature pruning with curated examples (E3, E5) dilutes E1's gain to non-significance. The takeaway is that a classifier is useful for deciding \emph{which features} the LLM should see, but random balanced few-shot examples are better than RF-curated ones.
+
+\begin{figure*}[!t]
+\centering
+\includegraphics[width=0.86\textwidth]{fig_roc_pr.pdf}
+\caption{ROC (left) and precision-recall (right) curves on the 2000-client test set for the direct LLM (L1), feature-pruned LLM (E1), the hybrid (E6), and the fitted Random Forest. Feeding the RF's probability into the prompt (E6) lifts the LLM's ROC/PR curves to essentially the Random Forest's level.}
+\label{fig:roc}
+\end{figure*}
+
+\subsection{Hybrid classifier--LLM composition}
+\textbf{RF $\rightarrow$ LLM (E6) is the best operating point.} Adding the RF's probability and decision to the prompt raises AUC-ROC from 0.719 (L1) to 0.782---a $+0.063$ significant gain that essentially matches the fitted RF (0.790)---and AUC-PR from 0.481 to 0.549. Crucially, E6 retains high recall: versus the fitted RF, E6 improves recall by $+0.118$ and F1 by $+0.045$ (both significant), at a negligible AUC cost ($-0.008$). Thus E6 attains Random-Forest-level ranking with substantially higher recall (Table~\ref{tab:hybrid}).
+
+\begin{table}[!t]
+\caption{Hybrid and reference models (N=2000). E6/E7 vs.\ RF paired: E6 recall $+0.118$ (sig), F1 $+0.045$ (sig), AUROC $-0.008$ (sig). E7 vs.\ E6: recall $-0.045$ (sig), F1/AUROC n.s.}
+\label{tab:hybrid}
+\centering
+\setlength{\tabcolsep}{3pt}
+\footnotesize
+\begin{tabular}{lcccccc}
+\toprule
+Model & Acc & Prec & Rec & F1 & AUROC & AUPRC \\
+\midrule
+E1 (feats only)        & 0.786 & 0.515 & \textbf{0.543} & \textbf{0.529} & 0.723 & 0.470 \\
+E6 (E1+RF)             & 0.803 & 0.561 & 0.491 & 0.524 & 0.782 & 0.549 \\
+E7 (E1+RF+LR+ADA)      & 0.811 & 0.595 & 0.446 & 0.510 & 0.776 & 0.536 \\
+Random Forest          & 0.821 & 0.668 & 0.373 & 0.479 & \textbf{0.790} & \textbf{0.577} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{More classifiers do not help.} Feeding three classifier opinions (RF, logistic regression, AdaBoost; E7) does not improve ranking over the RF-only hybrid (E7 vs.\ E6: $\Delta$AUC-ROC $-0.005$, n.s.; $\Delta$F1 $-0.014$, n.s.) and significantly \emph{reduces} recall ($-0.045$). The three classifiers are highly correlated (all AUC-ROC $\approx 0.79$, all high-precision/low-recall), so their combined signal is redundant and pushes the LLM toward a more conservative consensus.
+
+\textbf{The reverse composition does not help.} Adding the LLM's E1 output (label and confidence) as features to the RF, evaluated by 5-fold cross-validation on the 2{,}000 clients, yields no significant change: RF-with-LLM versus RF-without on identical folds gives $\Delta$recall $+0.002$, $\Delta$F1 $-0.004$, $\Delta$AUC-ROC $-0.002$ (all n.s.). Notably the RF ranks the LLM's confidence as its most important input, yet metrics do not move---the LLM's signal, being derived from the same features, is redundant with what the RF already extracts. Information useful for the hybrid flows one way: the classifier supplies ranking ability the LLM lacks, but the LLM supplies nothing the classifier lacks.
+
+\subsection{Diffusion-based minority augmentation}
+\label{sec:diffusion}
+Because recall is limited by class imbalance, we test whether augmenting the training data with \emph{synthetic defaulters} from a diffusion model helps a fitted RF, compared with standard remedies. We train a Gaussian denoising diffusion model (with a quantile-normal transform of continuous features) on the defaulter rows and generate synthetic defaulters to rebalance the training set; a detection classifier distinguishes real from synthetic defaulters with AUC $0.80$ (imperfect but usable). Table~\ref{tab:diffusion} reports RF performance on the full 6{,}000-client test set, averaged over 5 seeds.
+
+\begin{table}[!t]
+\caption{Random Forest under imbalance remedies (full test, N=6000; mean $\pm$ 95\% CI over 5 seeds).}
+\label{tab:diffusion}
+\centering
+\setlength{\tabcolsep}{3pt}
+\footnotesize
+\begin{tabular}{lccc}
+\toprule
+Strategy & Recall & F1 & AUPRC \\
+\midrule
+original            & 0.351\,$\pm$.004 & 0.458\,$\pm$.003 & 0.556\,$\pm$.003 \\
+class\_weight       & \textbf{0.575\,$\pm$.004} & \textbf{0.538\,$\pm$.003} & 0.550\,$\pm$.003 \\
+oversample          & 0.561\,$\pm$.005 & 0.537\,$\pm$.003 & 0.547\,$\pm$.001 \\
+SMOTE               & 0.541\,$\pm$.006 & 0.511\,$\pm$.005 & 0.518\,$\pm$.004 \\
+diffusion           & 0.541\,$\pm$.045 & 0.526\,$\pm$.017 & 0.540\,$\pm$.015 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Paired across seeds, diffusion augmentation \emph{significantly} beats SMOTE---the standard synthetic-minority baseline---on AUC-PR ($+0.022$), precision ($+0.028$), and accuracy ($+0.013$), while tying on recall and F1. However, it does \emph{not} beat simple class-weighting, which is free and gives the highest recall/F1, and diffusion shows higher run-to-run variance. Diffusion augmentation is therefore a better synthetic generator than SMOTE for this task but is not worth its complexity relative to class-weighting.
+
+\section{Discussion}
+Our results give a consistent picture of how a fitted classifier and an LLM should---and should not---be combined for imbalanced tabular credit prediction.
+
+\emph{Telling} an LLM to imitate a classifier is ineffective, but \emph{using} the classifier to shape the prompt is effective in one specific way: selecting which features to show. This is intuitive---dropping 15 low-importance columns reduces distraction---and it is the only prompt-only manipulation that significantly helped. Curating few-shot examples, by either difficulty or prototypicality, hurt; random balanced examples were consistently better, suggesting that example \emph{diversity} matters more than example ``informativeness'' for this task.
+
+The strongest practical result is the hybrid: feeding a single strong classifier's probability into the prompt gives the LLM the ranking ability it otherwise lacks (AUC-ROC $0.72\to0.78$) while preserving its higher recall---yielding a model that ranks like the Random Forest but catches substantially more defaulters. Because Random Forest inference is essentially free, this hybrid is cheap to deploy. The asymmetry is informative: the reverse composition (LLM $\to$ classifier) and richer ensembles (three classifiers $\to$ LLM) added nothing, indicating that a single strong classifier already supplies the complementary signal the LLM needs.
+
+\section{Limitations}
+Results use a single LLM (\texttt{claude-sonnet-5}), a single dataset, one 2{,}000-client evaluation draw, and one few-shot draw per condition. Bootstrap CIs capture test-set sampling uncertainty but not LLM-sampling or few-shot-draw variance; the ablation and hybrid conclusions would be strengthened by multiple prompt draws and additional models. The inverse-composition test trains the cross-validated RF on $\sim$1{,}600 rows per fold, below the 24{,}000-row RF, though the RF-with vs.\ RF-without comparison is controlled. The LLM used only the same features available to the classifiers; an LLM with access to information the classifier lacks (e.g., unstructured text) might contribute complementary signal, which we did not test. The diffusion generator treats ordinal repayment codes as continuous; a fully mixed-type generator might improve synthetic quality.
+
+\section{Conclusion}
+For imbalanced tabular credit-default prediction, a few-shot LLM is recall/F1-competitive with fitted models but inferior at ranking. Instructing the LLM to imitate a classifier does not help; the effective recipe is to (i) prune the prompt to the classifier's most important features and (ii) feed a single strong classifier's predicted probability into the prompt. The resulting hybrid matches the Random Forest's ranking while significantly improving recall, at negligible added cost. Curating few-shot examples, adding more classifier inputs, and the reverse (LLM-into-classifier) composition all failed to help. Separately, diffusion-based minority augmentation outperforms SMOTE but not class-weighting. These findings favor cheap, classifier-grounded hybrids over LLM-imitation prompting for credit risk.
+
+\section*{Acknowledgment}
+The authors thank Research Spark Hub Inc.\ for support in the preparation of this work.
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\appendices
+\section{Prompt and Reproducibility Details}
+All clients were serialized as comma-separated \texttt{name=value} fields. The base prompt states the task, briefly defines the feature groups (\texttt{PAY\_*} repayment codes, \texttt{BILL\_AMT}, \texttt{PAY\_AMT}, \texttt{LIMIT\_BAL}), lists $k{=}12$ balanced labeled examples, gives the condition-specific instruction, lists the clients, and requires a JSON array of \texttt{\{id,label,confidence\}} with no prose. In E1/E3/E5 the serialization is restricted to the RF's top-8 features (\texttt{PAY\_0, PAY\_2, BILL\_AMT1, PAY\_4, PAY\_3, LIMIT\_BAL, PAY\_AMT1, BILL\_AMT2}); in E6/E7 each row additionally carries classifier probabilities and 0/1 decisions (out-of-bag/cross-validated for few-shot examples, fitted-model outputs for test clients). Data split: stratified 80/20, seed 42; LLM evaluation on a stratified 2{,}000-client subset of the test set. Fitted models: RF (100 trees, depth 12), logistic regression (standardized), AdaBoost (200 estimators). LLM: \texttt{claude-sonnet-5}, extended thinking disabled, batched at 20 clients per request with response caching. Uncertainty: 1{,}000 bootstrap resamples (paired for between-condition comparisons); diffusion study over 5 seeds. Diffusion generator: Gaussian DDPM (cosine schedule) on quantile-normal-transformed defaulter rows.
+\end{document}

@@ -3,3 +3,8 @@ __pycache__/
 *.pyc
 data/*.xls
 .DS_Store
+paper/*.aux
+paper/*.log
+paper/*.out
+paper/*.bbl
+paper/*.blg

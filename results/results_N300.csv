@@ -1,0 +1,6 @@
+condition,accuracy,precision,recall,f1,pred_default_pct,TN,FP,FN,TP,auc_roc,auc_pr,sec_per_client
+Majority (no default),78.0,0.0,0.0,0.0,0.0,234,0,66,0,,,
+Logistic Regression,82.0,0.75,0.2727,0.4,8.0,228,6,48,18,0.7252,0.5564,
+Random Forest,83.0,0.6923,0.4091,0.5143,13.0,222,12,39,27,0.7969,0.6397,
+L1: Direct LLM,79.67,0.5439,0.4697,0.5041,19.0,208,26,35,31,0.6889,0.4722,0.1745
+L2: RF-informed LLM,81.0,0.5818,0.4848,0.5289,18.3,211,23,34,32,0.7087,0.4963,0.2241

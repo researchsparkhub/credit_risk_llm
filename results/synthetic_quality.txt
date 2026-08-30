@@ -1,0 +1,26 @@
+Per-feature mean (real def / synth def):
+  LIMIT_BAL       128242.61 /    120168.03
+  SEX                  1.56 /         1.57
+  EDUCATION            1.89 /         1.88
+  MARRIAGE             1.53 /         1.53
+  AGE                 35.65 /        35.57
+  PAY_0                0.68 /         0.66
+  PAY_2                0.46 /         0.45
+  PAY_3                0.37 /         0.27
+  PAY_4                0.26 /         0.12
+  PAY_5                0.16 /         0.03
+  PAY_6                0.11 /        -0.06
+  BILL_AMT1        47966.81 /     38672.05
+  BILL_AMT2        46613.35 /     36305.28
+  BILL_AMT3        44515.71 /     35427.33
+  BILL_AMT4        41507.16 /     31953.86
+  BILL_AMT5        39059.88 /     30902.41
+  BILL_AMT6        37765.99 /     30300.12
+  PAY_AMT1          3398.37 /      2722.70
+  PAY_AMT2          3406.97 /      2613.10
+  PAY_AMT3          3445.81 /      2620.36
+  PAY_AMT4          3227.29 /      2549.60
+  PAY_AMT5          3284.49 /      3220.64
+  PAY_AMT6          3445.43 /      2790.24
+
+Detection AUC (real vs synthetic; 0.5=indistinguishable, 1.0=easy): 0.966
